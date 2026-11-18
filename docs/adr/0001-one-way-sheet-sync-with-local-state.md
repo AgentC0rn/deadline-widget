@@ -1,0 +1,3 @@
+# Đồng bộ Google Sheet một chiều kết hợp lưu trạng thái hoàn thành cục bộ
+
+Ứng dụng đọc danh sách **Sheet Job** một chiều từ đường dẫn Google Sheet chia sẻ xem công khai (*Anyone with the link can view* qua CSV export) và lưu trạng thái đánh dấu hoàn thành cục bộ trên máy, thay vì ghi ngược lên Google Sheet qua Google Sheets API / OAuth2. Quyết định này đánh đổi khả năng đồng bộ trạng thái hoàn thành nhiều người dùng trên Sheet để đổi lấy trải nghiệm cài đặt tức thì: người dùng chỉ cần dán link Sheet là hoạt động ngay mà không cần cấu hình Google Cloud project, Service Account hay đăng nhập OAuth.
