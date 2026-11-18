@@ -1,8 +1,4 @@
-import {
-  HISTORICAL_OVERDUE_GRACE_MS,
-  type AlertMode,
-  type JobView,
-} from './core/deadlineTracker';
+import type { AlertMode } from './core/deadlineTracker';
 
 export interface LocalFormDraft {
   title: string;
@@ -33,11 +29,3 @@ export function nextAlertMode(current: AlertMode): AlertMode {
   if (current === 'serious') return 'silent';
   return 'troll';
 }
-
-export const HISTORICAL_GUARD_HELPER = {
-  countOldOverdue(incompleteJobs: JobView[], nowMs: number): number {
-    return incompleteJobs.filter(
-      (job) => nowMs - job.deadlineMs >= HISTORICAL_OVERDUE_GRACE_MS,
-    ).length;
-  },
-};

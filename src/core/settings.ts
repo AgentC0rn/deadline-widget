@@ -172,7 +172,7 @@ export function sanitizeAppSettings(raw: unknown): AppSettings {
   };
 }
 
-function sanitizeJob(raw: unknown): Job | null {
+function sanitizeJob(raw: unknown, fallbackNowMs: number): Job | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
   if (typeof obj.id !== 'string' || !obj.id.trim()) return null;
@@ -194,7 +194,7 @@ function sanitizeJob(raw: unknown): Job | null {
     firstSeenAtMs:
       typeof obj.firstSeenAtMs === 'number' && Number.isFinite(obj.firstSeenAtMs)
         ? obj.firstSeenAtMs
-        : Date.now(),
+        : fallbackNowMs,
     snoozeUntilMs:
       typeof obj.snoozeUntilMs === 'number' && Number.isFinite(obj.snoozeUntilMs)
         ? obj.snoozeUntilMs
@@ -204,7 +204,10 @@ function sanitizeJob(raw: unknown): Job | null {
   };
 }
 
-export function sanitizePersistedState(raw: unknown): PersistedAppState {
+export function sanitizePersistedState(
+  raw: unknown,
+  nowMs = 0,
+): PersistedAppState {
   if (!raw || typeof raw !== 'object') {
     return {
       version: 1,
@@ -220,12 +223,25 @@ export function sanitizePersistedState(raw: unknown): PersistedAppState {
       ? (obj.tracker as Record<string, unknown>)
       : {};
   const rawJobs = Array.isArray(rawTracker.jobs) ? rawTracker.jobs : [];
+  const rawCompletedSheetRecords =
+    rawTracker.completedSheetRecords && typeof rawTracker.completedSheetRecords === 'object'
+      ? (rawTracker.completedSheetRecords as Record<string, unknown>)
+      : {};
+  const completedSheetRecords: Record<string, number> = {};
+  for (const [key, val] of Object.entries(rawCompletedSheetRecords)) {
+    if (typeof val === 'number' && Number.isFinite(val)) {
+      completedSheetRecords[key] = val;
+    }
+  }
 
   return {
     version: 1,
     settings: sanitizeAppSettings(obj.settings),
     tracker: {
-      jobs: rawJobs.map(sanitizeJob).filter((j): j is Job => j !== null),
+      jobs: rawJobs
+        .map((item) => sanitizeJob(item, nowMs))
+        .filter((j): j is Job => j !== null),
+      completedSheetRecords,
     },
     seededDemoJobs: Boolean(obj.seededDemoJobs),
   };

@@ -36,6 +36,7 @@ export interface ChecklistSnapshot {
 
 export interface TrackerState {
   jobs: Job[];
+  completedSheetRecords?: Record<string, number>;
 }
 
 export interface LocalJobInput {
@@ -84,7 +85,7 @@ const CRITICAL_THRESHOLD_MS = 15 * 60 * 1000;
 export const HISTORICAL_OVERDUE_GRACE_MS = 15 * 60 * 1000;
 
 export function createEmptyTrackerState(): TrackerState {
-  return { jobs: [] };
+  return { jobs: [], completedSheetRecords: {} };
 }
 
 function padTwo(value: number): string {
@@ -119,8 +120,13 @@ export function addLocalJob(
   const trimmedTitle = input.title.trim();
   if (!trimmedTitle) return state;
 
-  const id =
-    input.id ?? `local-${nowMs}-${Math.random().toString(36).slice(2, 8)}`;
+  let seq = state.jobs.length + 1;
+  let id = input.id ?? `local-${nowMs}-${seq}`;
+  const existingIds = new Set(state.jobs.map((j) => j.id));
+  while (!input.id && existingIds.has(id)) {
+    seq += 1;
+    id = `local-${nowMs}-${seq}`;
+  }
 
   const newJob: Job = {
     id,
@@ -137,6 +143,7 @@ export function addLocalJob(
   };
 
   return {
+    ...state,
     jobs: [...state.jobs, newJob],
   };
 }
@@ -148,6 +155,7 @@ export function updateLocalJob(
   nowMs: number,
 ): TrackerState {
   return {
+    ...state,
     jobs: state.jobs.map((job) => {
       if (job.id !== jobId || job.kind !== 'local') return job;
       const deadlineMovedFuture = patch.deadlineMs > nowMs && patch.deadlineMs !== job.deadlineMs;
@@ -167,6 +175,7 @@ export function updateLocalJob(
 
 export function deleteLocalJob(state: TrackerState, jobId: string): TrackerState {
   return {
+    ...state,
     jobs: state.jobs.filter((job) => !(job.id === jobId && job.kind === 'local')),
   };
 }
@@ -176,17 +185,32 @@ export function toggleJobCompletion(
   jobId: string,
   nowMs: number,
 ): TrackerState {
+  const nextSheetRecords: Record<string, number> = {
+    ...(state.completedSheetRecords ?? {}),
+  };
+
+  const nextJobs = state.jobs.map((job) => {
+    if (job.id !== jobId) return job;
+    const nextCompleted = !job.completed;
+    if (job.kind === 'sheet') {
+      if (nextCompleted) {
+        nextSheetRecords[job.id] = nowMs;
+      } else {
+        delete nextSheetRecords[job.id];
+      }
+    }
+    return {
+      ...job,
+      completed: nextCompleted,
+      completedAtMs: nextCompleted ? nowMs : null,
+      snoozeUntilMs: nextCompleted ? null : job.snoozeUntilMs,
+    };
+  });
+
   return {
-    jobs: state.jobs.map((job) => {
-      if (job.id !== jobId) return job;
-      const nextCompleted = !job.completed;
-      return {
-        ...job,
-        completed: nextCompleted,
-        completedAtMs: nextCompleted ? nowMs : null,
-        snoozeUntilMs: nextCompleted ? null : job.snoozeUntilMs,
-      };
-    }),
+    ...state,
+    jobs: nextJobs,
+    completedSheetRecords: nextSheetRecords,
   };
 }
 
@@ -229,10 +253,16 @@ export function reconcileSheetJobs(
 ): TrackerState {
   const existingSheetJobs = new Map<string, Job>();
   const localJobs: Job[] = [];
+  const nextSheetRecords: Record<string, number> = {
+    ...(state.completedSheetRecords ?? {}),
+  };
 
   for (const job of state.jobs) {
     if (job.kind === 'sheet') {
       existingSheetJobs.set(job.id, job);
+      if (job.completed) {
+        nextSheetRecords[job.id] = job.completedAtMs ?? nowMs;
+      }
     } else {
       localJobs.push(job);
     }
@@ -259,25 +289,40 @@ export function reconcileSheetJobs(
       };
     }
 
+    const rememberedCompletedAt = nextSheetRecords[input.id] ?? null;
+    const isRememberedCompleted = rememberedCompletedAt !== null;
     const isHistoricalOverdue = input.deadlineMs < nowMs - HISTORICAL_OVERDUE_GRACE_MS;
+
     return {
       id: input.id,
       kind: 'sheet',
       title: input.title,
       description: input.description,
       deadlineMs: input.deadlineMs,
-      completed: false,
-      completedAtMs: null,
+      completed: isRememberedCompleted,
+      completedAtMs: rememberedCompletedAt,
       firstSeenAtMs: nowMs,
       snoozeUntilMs: null,
-      criticalCueFired: isHistoricalOverdue || input.deadlineMs <= nowMs,
-      deadlineAlertFired: isHistoricalOverdue,
+      criticalCueFired: isRememberedCompleted || isHistoricalOverdue || input.deadlineMs <= nowMs,
+      deadlineAlertFired: isRememberedCompleted || isHistoricalOverdue,
     };
   });
 
   return {
     jobs: [...localJobs, ...nextSheetJobs],
+    completedSheetRecords: nextSheetRecords,
   };
+}
+
+export function isHistoricalSheetOverdue(
+  job: Pick<Job, 'kind' | 'completed' | 'deadlineMs' | 'firstSeenAtMs'>,
+  minOverdueMs = HISTORICAL_OVERDUE_GRACE_MS,
+): boolean {
+  return (
+    job.kind === 'sheet' &&
+    !job.completed &&
+    job.firstSeenAtMs - job.deadlineMs >= minOverdueMs
+  );
 }
 
 export function completeHistoricalOverdueJobs(
@@ -285,10 +330,15 @@ export function completeHistoricalOverdueJobs(
   nowMs: number,
   minOverdueMs = HISTORICAL_OVERDUE_GRACE_MS,
 ): TrackerState {
+  const nextSheetRecords: Record<string, number> = {
+    ...(state.completedSheetRecords ?? {}),
+  };
+
   return {
+    ...state,
     jobs: state.jobs.map((job) => {
-      if (job.completed) return job;
-      if (nowMs - job.deadlineMs >= minOverdueMs) {
+      if (isHistoricalSheetOverdue(job, minOverdueMs)) {
+        nextSheetRecords[job.id] = nowMs;
         return {
           ...job,
           completed: true,
@@ -298,6 +348,7 @@ export function completeHistoricalOverdueJobs(
       }
       return job;
     }),
+    completedSheetRecords: nextSheetRecords,
   };
 }
 
@@ -309,6 +360,7 @@ export function snoozeJobAlert(
 ): TrackerState {
   const safeMinutes = Math.max(1, snoozeMinutes);
   return {
+    ...state,
     jobs: state.jobs.map((job) => {
       if (job.id !== jobId || job.completed) return job;
       return {
@@ -328,6 +380,31 @@ function pickTrollMessage(messages: string[], randomIndex?: number): string {
       ? Math.abs(randomIndex) % messages.length
       : Math.floor(Math.random() * messages.length);
   return messages[idx] ?? fallback;
+}
+
+export function countHistoricalOverdueJobs(
+  incompleteJobs: JobView[],
+  minOverdueMs = HISTORICAL_OVERDUE_GRACE_MS,
+): number {
+  return incompleteJobs.filter((job) => isHistoricalSheetOverdue(job, minOverdueMs)).length;
+}
+
+function buildDeadlineAlertEvent(
+  job: Job,
+  alertMode: 'troll' | 'serious',
+  trollMessages: string[],
+  randomIndex?: number,
+): DeadlineAlertEvent {
+  return {
+    jobId: job.id,
+    title: job.title,
+    description: job.description,
+    deadlineMs: job.deadlineMs,
+    alertMode,
+    ...(alertMode === 'troll'
+      ? { trollMessage: pickTrollMessage(trollMessages, randomIndex) }
+      : {}),
+  };
 }
 
 export function evaluateAlertsAt(
@@ -350,16 +427,9 @@ export function evaluateAlertsAt(
       }
       changed = true;
       if (alertMode !== 'silent') {
-        deadlineAlerts.push({
-          jobId: job.id,
-          title: job.title,
-          description: job.description,
-          deadlineMs: job.deadlineMs,
-          alertMode,
-          ...(alertMode === 'troll'
-            ? { trollMessage: pickTrollMessage(trollMessages, randomIndex) }
-            : {}),
-        });
+        deadlineAlerts.push(
+          buildDeadlineAlertEvent(job, alertMode, trollMessages, randomIndex),
+        );
       }
       return {
         ...job,
@@ -375,16 +445,9 @@ export function evaluateAlertsAt(
         job.deadlineMs < job.firstSeenAtMs - HISTORICAL_OVERDUE_GRACE_MS;
 
       if (!wasHistoricalOnImport && alertMode !== 'silent') {
-        deadlineAlerts.push({
-          jobId: job.id,
-          title: job.title,
-          description: job.description,
-          deadlineMs: job.deadlineMs,
-          alertMode,
-          ...(alertMode === 'troll'
-            ? { trollMessage: pickTrollMessage(trollMessages, randomIndex) }
-            : {}),
-        });
+        deadlineAlerts.push(
+          buildDeadlineAlertEvent(job, alertMode, trollMessages, randomIndex),
+        );
       }
 
       return {
@@ -417,7 +480,7 @@ export function evaluateAlertsAt(
   });
 
   return {
-    state: changed ? { jobs: nextJobs } : state,
+    state: changed ? { ...state, jobs: nextJobs } : state,
     preDeadlineCues,
     deadlineAlerts,
   };

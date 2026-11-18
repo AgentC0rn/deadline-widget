@@ -23,7 +23,6 @@ import { DeadlineAlertPopup } from './components/DeadlineAlertPopup';
 import { MiniPillView } from './components/MiniPillView';
 import { SettingsView } from './components/SettingsView';
 import {
-  HISTORICAL_GUARD_HELPER,
   type LocalFormDraft,
   formatDatetimeLocalInput,
   formatShortDeadline,
@@ -36,6 +35,7 @@ import {
   type TrackerState,
   addLocalJob,
   completeHistoricalOverdueJobs,
+  countHistoricalOverdueJobs,
   createEmptyTrackerState,
   deleteLocalJob,
   evaluateAlertsAt,
@@ -101,12 +101,16 @@ function FloatingWidgetMain() {
   const [syncStatusText, setSyncStatusText] = useState<string | null>(null);
   const [detectedHeaders, setDetectedHeaders] = useState<string[]>([]);
   const [detectedColumns, setDetectedColumns] = useState<ColumnMapping | null>(null);
+  const [criticalCueBanner, setCriticalCueBanner] = useState<string | null>(null);
 
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
   const trackerRef = useRef(tracker);
   trackerRef.current = tracker;
+
+  const showSettingsRef = useRef(showSettings);
+  showSettingsRef.current = showSettings;
 
   const switchViewMode = useCallback(
     (nextMode: WidgetViewMode) => {
@@ -207,22 +211,29 @@ function FloatingWidgetMain() {
     [bridge],
   );
 
-  // Auto-sync Source Sheet on mount and on interval
+  // Auto-sync Source Sheet (debounced on URL/config edits + periodic polling)
   useEffect(() => {
     if (!hydrated) return;
-    if (!settings.sourceSheetUrl.trim()) {
+    const trimmedUrl = settings.sourceSheetUrl.trim();
+    if (!trimmedUrl) {
       setTracker((prev) => reconcileSheetJobs(prev, [], Date.now()));
       setSyncStatusText(null);
       setSyncError(null);
       return;
     }
 
-    void syncSourceSheet(settings.sourceSheetUrl);
+    const debounceId = window.setTimeout(() => {
+      void syncSourceSheet(trimmedUrl);
+    }, 550);
+
     const intervalMs = Math.max(30, settings.syncIntervalSec) * 1_000;
     const timer = window.setInterval(() => {
       void syncSourceSheet();
     }, intervalMs);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearTimeout(debounceId);
+      window.clearInterval(timer);
+    };
   }, [
     hydrated,
     settings.sourceSheetUrl,
@@ -231,6 +242,18 @@ function FloatingWidgetMain() {
     settings.columnOverrides,
     syncSourceSheet,
   ]);
+
+  // Auto-collapse back to Mini Pill on window blur when unpinned
+  useEffect(() => {
+    return bridge.onWindowBlurred(() => {
+      if (
+        !settingsRef.current.pinnedExpanded &&
+        !showSettingsRef.current
+      ) {
+        switchViewMode('mini-pill');
+      }
+    });
+  }, [bridge, switchViewMode]);
 
   const triggerTestAlert = useCallback(() => {
     const currentSettings = settingsRef.current;
@@ -271,8 +294,14 @@ function FloatingWidgetMain() {
         setTracker(evaluation.state);
       }
 
-      if (evaluation.preDeadlineCues.length > 0 && currentSettings.soundEnabled) {
-        playPreDeadlineHeadsUp(currentSettings.soundVolume);
+      if (evaluation.preDeadlineCues.length > 0) {
+        const firstCue = evaluation.preDeadlineCues[0];
+        if (firstCue) {
+          setCriticalCueBanner(`⚠️ Sắp hết giờ (< 15p): ${firstCue.title}`);
+        }
+        if (currentSettings.soundEnabled) {
+          playPreDeadlineHeadsUp(currentSettings.soundVolume);
+        }
       }
 
       if (evaluation.deadlineAlerts.length > 0) {
@@ -330,9 +359,13 @@ function FloatingWidgetMain() {
   );
 
   const oldOverdueCount = useMemo(
-    () => HISTORICAL_GUARD_HELPER.countOldOverdue(snapshot.incompleteJobs, nowMs),
-    [snapshot.incompleteJobs, nowMs],
+    () => countHistoricalOverdueJobs(snapshot.incompleteJobs),
+    [snapshot.incompleteJobs],
   );
+
+  const hasOverdueInSilentMode =
+    settings.alertMode === 'silent' &&
+    snapshot.incompleteJobs.some((job) => job.isOverdue);
 
   if (viewMode === 'mini-pill') {
     return (
@@ -404,7 +437,7 @@ function FloatingWidgetMain() {
   return (
     <div className="panel-shell">
       <div
-        className="panel-card"
+        className={`panel-card ${hasOverdueInSilentMode ? 'silent-overdue' : ''}`}
         style={{ background: `rgba(15, 23, 42, ${settings.opacity})` }}
       >
         {showSettings ? (
@@ -525,6 +558,20 @@ function FloatingWidgetMain() {
                 Thêm Job nhanh
               </button>
             </div>
+
+            {criticalCueBanner && (
+              <div className="banner-strip critical-cue no-drag">
+                <span>{criticalCueBanner}</span>
+                <button
+                  type="button"
+                  className="tiny-icon-btn"
+                  onClick={() => setCriticalCueBanner(null)}
+                  title="Đóng nhắc nhở"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            )}
 
             {syncError && (
               <div className="banner-strip error no-drag">

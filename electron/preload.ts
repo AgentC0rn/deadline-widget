@@ -65,6 +65,16 @@ const bridge: DeadlineDesktopBridge = {
     };
   },
 
+  onWindowBlurred: (listener: () => void) => {
+    const wrapped = () => {
+      listener();
+    };
+    ipcRenderer.on('window:blurred', wrapped);
+    return () => {
+      ipcRenderer.removeListener('window:blurred', wrapped);
+    };
+  },
+
   hideWidgetToTray: (): Promise<void> => ipcRenderer.invoke('window:hide-to-tray'),
 };
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlarmClock, BellRing, Check, EyeOff } from 'lucide-react';
+import { formatShortDeadline } from '../appHelpers';
 import { playAlertSound } from '../audio/soundEngine';
 import { getDesktopBridge } from '../bridge';
 import type { DeadlineAlertEvent } from '../core/deadlineTracker';
@@ -55,12 +56,7 @@ export function DeadlineAlertPopup() {
   }
 
   const isTroll = current.alertMode === 'troll';
-  const deadlineFormatted = new Date(current.deadlineMs).toLocaleString('vi-VN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-  });
+  const deadlineFormatted = formatShortDeadline(current.deadlineMs);
 
   return (
     <div className="alert-popup-shell">

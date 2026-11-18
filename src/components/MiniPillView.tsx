@@ -1,4 +1,4 @@
-import { Maximize2 } from 'lucide-react';
+import { GripVertical, Maximize2 } from 'lucide-react';
 import type { ChecklistSnapshot } from '../core/deadlineTracker';
 
 interface MiniPillViewProps {
@@ -21,7 +21,32 @@ export function MiniPillView({
         className={`mini-pill-card urgency-${urgency}`}
         style={{ background: `rgba(15, 23, 42, ${opacity})` }}
       >
-        <div className="mini-pill-left drag-region" title="Kéo để di chuyển Widget">
+        <div
+          className="drag-region"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            color: '#64748b',
+            cursor: 'grab',
+            padding: '4px 2px',
+          }}
+          title="Kéo để di chuyển Widget"
+        >
+          <GripVertical size={15} />
+        </div>
+
+        <button
+          type="button"
+          className="mini-pill-left no-drag"
+          style={{
+            background: 'transparent',
+            border: 'none',
+            textAlign: 'left',
+            cursor: 'pointer',
+          }}
+          onClick={onExpand}
+          title="Bấm để mở rộng Checklist Panel"
+        >
           <span className={`status-dot ${urgency}`} />
           <div className="mini-pill-info">
             <div className="mini-pill-title">
@@ -32,10 +57,10 @@ export function MiniPillView({
             <div className="mini-pill-sub">
               {incompleteCount > 0
                 ? `${miniPillJob?.isOverdue ? 'Đã quá hạn • ' : ''}Còn ${incompleteCount} việc chưa xong`
-                : 'Bấm mở rộng để thêm việc mới'}
+                : 'Bấm để mở danh sách công việc'}
             </div>
           </div>
-        </div>
+        </button>
 
         <div className="mini-pill-actions no-drag">
           {miniPillJob && (

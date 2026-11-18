@@ -37,20 +37,51 @@ let mainWindow: BrowserWindow | null = null;
 let alertWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let isPickingFile = false;
 let currentViewMode: WidgetViewMode = 'checklist-panel';
 let pendingAlerts: DeadlineAlertEvent[] = [];
 let cachedState: PersistedAppState | null = null;
+
+function isValidViewMode(value: unknown): value is WidgetViewMode {
+  return value === 'mini-pill' || value === 'checklist-panel';
+}
+
+function isValidDeadlineAlertEvent(value: unknown): value is DeadlineAlertEvent {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.jobId === 'string' &&
+    obj.jobId.length > 0 &&
+    typeof obj.title === 'string' &&
+    typeof obj.description === 'string' &&
+    typeof obj.deadlineMs === 'number' &&
+    Number.isFinite(obj.deadlineMs) &&
+    (obj.alertMode === 'troll' || obj.alertMode === 'serious')
+  );
+}
+
+function isValidAlertWindowAction(value: unknown): value is AlertWindowAction {
+  if (!value || typeof value !== 'object') return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    (obj.type === 'complete' || obj.type === 'snooze' || obj.type === 'dismiss') &&
+    typeof obj.jobId === 'string' &&
+    obj.jobId.length > 0
+  );
+}
 
 function getStateFilePath(): string {
   return path.join(app.getPath('userData'), 'deadline-widget-state.json');
 }
 
-function seedFirstRunStateIfNeeded(state: PersistedAppState): PersistedAppState {
+function seedFirstRunStateIfNeeded(
+  state: PersistedAppState,
+  nowMs: number,
+): PersistedAppState {
   if (state.seededDemoJobs || state.tracker.jobs.length > 0) {
     return state;
   }
 
-  const now = Date.now();
   let tracker = state.tracker;
   tracker = addLocalJob(
     tracker,
@@ -58,9 +89,9 @@ function seedFirstRunStateIfNeeded(state: PersistedAppState): PersistedAppState 
       id: 'demo-urgent',
       title: 'Duyệt thiết kế Banner chiến dịch',
       description: 'Kiểm tra chính tả & kích thước trước khi gửi khách (Job mẫu)',
-      deadlineMs: now + 12 * 60 * 1000,
+      deadlineMs: nowMs + 18 * 60 * 1000,
     },
-    now,
+    nowMs,
   );
   tracker = addLocalJob(
     tracker,
@@ -68,19 +99,20 @@ function seedFirstRunStateIfNeeded(state: PersistedAppState): PersistedAppState 
       id: 'demo-warning',
       title: 'Gửi báo cáo tiến độ chiều nay',
       description: 'Tổng hợp các đầu việc quan trọng trong ngày (Job mẫu)',
-      deadlineMs: now + 48 * 60 * 1000,
+      deadlineMs: nowMs + 48 * 60 * 1000,
     },
-    now,
+    nowMs,
   );
   tracker = addLocalJob(
     tracker,
     {
       id: 'demo-sheet-tip',
       title: 'Kết nối link Google Sheet công việc',
-      description: 'Bấm biểu tượng Cài đặt (⚙) để dán link Google Sheet của bạn vào quét tự động!',
-      deadlineMs: now + 3 * 60 * 60 * 1000,
+      description:
+        'Bấm biểu tượng Cài đặt (⚙) để dán link Google Sheet của bạn vào quét tự động!',
+      deadlineMs: nowMs + 3 * 60 * 60 * 1000,
     },
-    now,
+    nowMs,
   );
 
   return {
@@ -92,43 +124,118 @@ function seedFirstRunStateIfNeeded(state: PersistedAppState): PersistedAppState 
 
 function loadStateFromDisk(): PersistedAppState {
   if (cachedState) return cachedState;
+  const nowMs = Date.now();
   const filePath = getStateFilePath();
   try {
     if (fs.existsSync(filePath)) {
       const rawText = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(rawText) as unknown;
-      cachedState = seedFirstRunStateIfNeeded(sanitizePersistedState(parsed));
+      cachedState = seedFirstRunStateIfNeeded(
+        sanitizePersistedState(parsed, nowMs),
+        nowMs,
+      );
       return cachedState;
     }
   } catch {
     // Corrupted file falls back cleanly to defaults
   }
-  cachedState = seedFirstRunStateIfNeeded(sanitizePersistedState(null));
+  cachedState = seedFirstRunStateIfNeeded(sanitizePersistedState(null, nowMs), nowMs);
   saveStateToDisk(cachedState);
   return cachedState;
 }
 
-function saveStateToDisk(nextState: PersistedAppState): void {
-  const sanitized = sanitizePersistedState(nextState);
+function reconcileOpenAlertWindowWithState(state: PersistedAppState): void {
+  if (pendingAlerts.length === 0) return;
+
+  const mode = state.settings.alertMode;
+  if (mode === 'silent') {
+    pendingAlerts = [];
+    if (alertWindow && !alertWindow.isDestroyed()) {
+      alertWindow.webContents.send('alerts:updated', []);
+      alertWindow.hide();
+    }
+    return;
+  }
+
+  const nowMs = Date.now();
+  const activeAlertableJobIds = new Set(
+    state.tracker.jobs
+      .filter(
+        (j) =>
+          !j.completed &&
+          (j.snoozeUntilMs === null || j.snoozeUntilMs <= nowMs),
+      )
+      .map((j) => j.id),
+  );
+
+  const messages = state.settings.trollMessages;
+  const fallbackQuote = messages[0] ?? 'Hết giờ rồi bạn ơi!';
+
+  pendingAlerts = pendingAlerts
+    .filter((a) => a.jobId.startsWith('preview-') || activeAlertableJobIds.has(a.jobId))
+    .map((a) => {
+      if (mode === 'serious') {
+        return {
+          jobId: a.jobId,
+          title: a.title,
+          description: a.description,
+          deadlineMs: a.deadlineMs,
+          alertMode: 'serious',
+        };
+      }
+      return {
+        ...a,
+        alertMode: 'troll',
+        trollMessage: a.trollMessage ?? fallbackQuote,
+      };
+    });
+
+  if (alertWindow && !alertWindow.isDestroyed()) {
+    alertWindow.webContents.send('alerts:updated', pendingAlerts);
+    if (pendingAlerts.length === 0) {
+      alertWindow.hide();
+    }
+  }
+}
+
+function saveStateToDisk(
+  nextState: unknown,
+  options?: { preserveMainWindowPosition?: boolean },
+): void {
+  const sanitized = sanitizePersistedState(nextState, Date.now());
+  const preservedPosition = options?.preserveMainWindowPosition
+    ? (cachedState?.settings.windowPosition ?? sanitized.settings.windowPosition)
+    : sanitized.settings.windowPosition;
+
+  const finalState: PersistedAppState = {
+    ...sanitized,
+    settings: {
+      ...sanitized.settings,
+      windowPosition: preservedPosition,
+    },
+  };
+
   const prevMode = cachedState?.settings.alertMode;
-  cachedState = sanitized;
+  cachedState = finalState;
 
   const filePath = getStateFilePath();
   const dir = path.dirname(filePath);
   try {
     fs.mkdirSync(dir, { recursive: true });
     const tempPath = `${filePath}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(sanitized, null, 2), 'utf-8');
+    fs.writeFileSync(tempPath, JSON.stringify(finalState, null, 2), 'utf-8');
     fs.renameSync(tempPath, filePath);
   } catch {
     try {
-      fs.writeFileSync(filePath, JSON.stringify(sanitized, null, 2), 'utf-8');
+      fs.writeFileSync(filePath, JSON.stringify(finalState, null, 2), 'utf-8');
     } catch {
       // Ignore write lock contention
     }
   }
 
-  if (prevMode !== sanitized.settings.alertMode) {
+  reconcileOpenAlertWindowWithState(finalState);
+
+  if (prevMode !== finalState.settings.alertMode) {
     rebuildTrayMenu();
   }
 }
@@ -224,6 +331,11 @@ function createMainWindow(): void {
     });
   });
 
+  mainWindow.on('blur', () => {
+    if (!mainWindow || mainWindow.isDestroyed() || isPickingFile) return;
+    mainWindow.webContents.send('window:blurred');
+  });
+
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
@@ -292,7 +404,6 @@ function createProgrammaticTrayIcon(): Electron.NativeImage {
     for (let x = 0; x < size; x += 1) {
       const dist = Math.hypot(x - center, y - center);
       if (dist <= 7.2) {
-        // Vibrant amber-orange border + dark slate dial
         if (dist >= 5.6) {
           setPixel(x, y, 249, 115, 22);
         } else {
@@ -302,7 +413,6 @@ function createProgrammaticTrayIcon(): Electron.NativeImage {
     }
   }
 
-  // Clock hands in crisp white
   for (let y = 3; y <= 7; y += 1) setPixel(7, y, 255, 255, 255);
   for (let x = 7; x <= 11; x += 1) setPixel(x, 8, 56, 189, 248);
 
@@ -374,10 +484,6 @@ function rebuildTrayMenu(): void {
         dispatchTrayCommand({ type: 'sync-now' });
       },
     },
-    {
-      label: '🧪 Xem thử Popup Deadline Alert',
-      click: () => dispatchTrayCommand({ type: 'test-alert' }),
-    },
     { type: 'separator' },
     {
       label: '❌ Thoát hẳn ứng dụng',
@@ -409,11 +515,12 @@ function createSystemTray(): void {
 function registerIpcHandlers(): void {
   ipcMain.handle('state:load', () => loadStateFromDisk());
 
-  ipcMain.handle('state:save', (_event, nextState: PersistedAppState) => {
-    saveStateToDisk(nextState);
+  ipcMain.handle('state:save', (_event, nextState: unknown) => {
+    saveStateToDisk(nextState, { preserveMainWindowPosition: true });
   });
 
-  ipcMain.handle('window:set-view-mode', (_event, mode: WidgetViewMode) => {
+  ipcMain.handle('window:set-view-mode', (_event, mode: unknown) => {
+    if (!isValidViewMode(mode)) return;
     if (!mainWindow || mainWindow.isDestroyed()) return;
     if (currentViewMode === mode) return;
 
@@ -425,7 +532,6 @@ function registerIpcHandlers(): void {
       y: oldBounds.y,
     }).workArea;
 
-    // Anchor right edge when positioned in the right half of the display
     const inRightHalf =
       oldBounds.x + oldBounds.width / 2 > displayArea.x + displayArea.width / 2;
     const desiredX = inRightHalf
@@ -456,12 +562,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'sheet:fetch-csv',
-    async (_event, rawOrCsvUrl: string): Promise<FetchSheetCsvResult> => {
+    async (_event, rawOrCsvUrl: unknown): Promise<FetchSheetCsvResult> => {
+      if (typeof rawOrCsvUrl !== 'string') {
+        return { ok: false, error: 'Đường dẫn Google Sheet không hợp lệ.' };
+      }
+
       const normalizedUrl = buildGoogleSheetCsvUrl(rawOrCsvUrl);
       if (!normalizedUrl) {
         return {
           ok: false,
-          error: 'Link Google Sheet không hợp lệ. Hãy dán link chia sẻ của bảng tính Google Sheet.',
+          error:
+            'Link Google Sheet không hợp lệ. Hãy dán link chia sẻ của bảng tính Google Sheet.',
         };
       }
 
@@ -511,24 +622,25 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('audio:pick-file', async (): Promise<PickAudioFileResult> => {
     const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-    const dialogResult = owner
-      ? await dialog.showOpenDialog(owner, {
-          title: 'Chọn âm thanh cảnh báo Deadline',
-          filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }],
-          properties: ['openFile'],
-        })
-      : await dialog.showOpenDialog({
-          title: 'Chọn âm thanh cảnh báo Deadline',
-          filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }],
-          properties: ['openFile'],
-        });
-
-    if (dialogResult.canceled || dialogResult.filePaths.length === 0) {
-      return { canceled: true };
-    }
-
-    const chosenPath = dialogResult.filePaths[0]!;
+    isPickingFile = true;
     try {
+      const dialogResult = owner
+        ? await dialog.showOpenDialog(owner, {
+            title: 'Chọn âm thanh cảnh báo Deadline',
+            filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }],
+            properties: ['openFile'],
+          })
+        : await dialog.showOpenDialog({
+            title: 'Chọn âm thanh cảnh báo Deadline',
+            filters: [{ name: 'Audio Files', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }],
+            properties: ['openFile'],
+          });
+
+      const chosenPath = dialogResult.filePaths[0];
+      if (dialogResult.canceled || !chosenPath) {
+        return { canceled: true };
+      }
+
       const stat = fs.statSync(chosenPath);
       if (stat.size > MAX_AUDIO_FILE_BYTES) {
         return {
@@ -557,14 +669,18 @@ function registerIpcHandlers(): void {
         canceled: false,
         error: 'Không thể đọc file âm thanh đã chọn.',
       };
+    } finally {
+      isPickingFile = false;
     }
   });
 
-  ipcMain.handle('alerts:show', (_event, incomingAlerts: DeadlineAlertEvent[]) => {
-    if (!Array.isArray(incomingAlerts) || incomingAlerts.length === 0) return;
+  ipcMain.handle('alerts:show', (_event, incomingAlerts: unknown) => {
+    if (!Array.isArray(incomingAlerts)) return;
+    const validAlerts = incomingAlerts.filter(isValidDeadlineAlertEvent);
+    if (validAlerts.length === 0) return;
 
     const existingIds = new Set(pendingAlerts.map((a) => a.jobId));
-    for (const alert of incomingAlerts) {
+    for (const alert of validAlerts) {
       if (existingIds.has(alert.jobId)) {
         pendingAlerts = pendingAlerts.map((a) => (a.jobId === alert.jobId ? alert : a));
       } else {
@@ -591,7 +707,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('alerts:get-pending', () => pendingAlerts);
 
-  ipcMain.handle('alerts:action', (_event, action: AlertWindowAction) => {
+  ipcMain.handle('alerts:action', (_event, action: unknown) => {
+    if (!isValidAlertWindowAction(action)) return;
     pendingAlerts = pendingAlerts.filter((a) => a.jobId !== action.jobId);
 
     if (alertWindow && !alertWindow.isDestroyed()) {

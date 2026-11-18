@@ -85,7 +85,7 @@ export function parseCsvRows(csvText: string): string[][] {
   let inQuotes = false;
 
   for (let i = 0; i < clean.length; i += 1) {
-    const ch = clean[i]!;
+    const ch = clean.charAt(i);
     if (inQuotes) {
       if (ch === '"') {
         if (clean[i + 1] === '"') {
@@ -179,7 +179,7 @@ function matchColumnHeader(
     );
     if (exactIdx !== -1) {
       usedIndices.add(exactIdx);
-      return { name: headers[exactIdx]!, index: exactIdx };
+      return { name: headers[exactIdx] ?? null, index: exactIdx };
     }
   }
 
@@ -189,7 +189,7 @@ function matchColumnHeader(
     );
     if (partialIdx !== -1) {
       usedIndices.add(partialIdx);
-      return { name: headers[partialIdx]!, index: partialIdx };
+      return { name: headers[partialIdx] ?? null, index: partialIdx };
     }
   }
 
@@ -333,20 +333,36 @@ export function parseSourceSheetCsv(
     };
   }
 
-  const headers = rows[0]!;
+  const headers = rows[0] ?? [];
   const used = new Set<number>();
 
   const resolveColumn = (
     overrideName: string | null | undefined,
     patterns: string[],
   ): { name: string | null; index: number } => {
-    if (overrideName && overrideName.trim()) {
-      const idx = headers.findIndex(
-        (h) => h.trim().toLowerCase() === overrideName.trim().toLowerCase(),
+    const trimmedOverride = overrideName?.trim();
+    if (trimmedOverride) {
+      const exactHeaderIdx = headers.findIndex(
+        (h) => h.trim().toLowerCase() === trimmedOverride.toLowerCase(),
       );
-      if (idx !== -1) {
-        used.add(idx);
-        return { name: headers[idx]!, index: idx };
+      if (exactHeaderIdx !== -1) {
+        used.add(exactHeaderIdx);
+        return { name: headers[exactHeaderIdx] ?? null, index: exactHeaderIdx };
+      }
+
+      // Support 1-based numeric index ("1", "2") or spreadsheet column letter ("A", "B", "C")
+      if (/^\d+$/.test(trimmedOverride)) {
+        const zeroBased = Math.max(0, Number(trimmedOverride) - 1);
+        if (zeroBased < headers.length) {
+          used.add(zeroBased);
+          return { name: headers[zeroBased] ?? null, index: zeroBased };
+        }
+      } else if (/^[a-zA-Z]$/.test(trimmedOverride)) {
+        const letterIdx = trimmedOverride.toUpperCase().charCodeAt(0) - 65;
+        if (letterIdx >= 0 && letterIdx < headers.length) {
+          used.add(letterIdx);
+          return { name: headers[letterIdx] ?? null, index: letterIdx };
+        }
       }
     }
     return matchColumnHeader(headers, patterns, used);
@@ -384,7 +400,7 @@ export function parseSourceSheetCsv(
   let skippedRows = 0;
 
   for (let r = 1; r < rows.length; r += 1) {
-    const row = rows[r]!;
+    const row = rows[r] ?? [];
     const title = (row[titleCol.index] ?? '').trim();
     const rawDeadline = (row[deadlineCol.index] ?? '').trim();
 

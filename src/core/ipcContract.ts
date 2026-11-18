@@ -41,5 +41,6 @@ export interface DeadlineDesktopBridge {
   onAlertsUpdated: (listener: (alerts: DeadlineAlertEvent[]) => void) => () => void;
   onAlertAction: (listener: (action: AlertWindowAction) => void) => () => void;
   onTrayCommand: (listener: (command: TrayCommand) => void) => () => void;
+  onWindowBlurred: (listener: () => void) => () => void;
   hideWidgetToTray: () => Promise<void>;
 }

@@ -7,33 +7,14 @@ declare global {
   }
 }
 
-const STORAGE_FALLBACK_KEY = 'deadline-widget-browser-fallback-v1';
-
-const browserFallbackBridge: DeadlineDesktopBridge = {
+const noopBridge: DeadlineDesktopBridge = {
   async loadPersistedState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_FALLBACK_KEY);
-      return sanitizePersistedState(raw ? JSON.parse(raw) : null);
-    } catch {
-      return sanitizePersistedState(null);
-    }
+    return sanitizePersistedState(null, Date.now());
   },
-  async savePersistedState(state) {
-    try {
-      localStorage.setItem(STORAGE_FALLBACK_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore storage quota errors
-    }
-  },
+  async savePersistedState() {},
   async setWidgetViewMode() {},
-  async fetchSheetCsv(csvUrl) {
-    try {
-      const res = await fetch(csvUrl);
-      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-      return { ok: true, csvText: await res.text() };
-    } catch {
-      return { ok: false, error: 'Không tải được dữ liệu Sheet từ trình duyệt.' };
-    }
+  async fetchSheetCsv() {
+    return { ok: false, error: 'Chỉ hoạt động trong ứng dụng Desktop Electron.' };
   },
   async pickCustomAudioFile() {
     return { canceled: true };
@@ -52,9 +33,12 @@ const browserFallbackBridge: DeadlineDesktopBridge = {
   onTrayCommand() {
     return () => {};
   },
+  onWindowBlurred() {
+    return () => {};
+  },
   async hideWidgetToTray() {},
 };
 
 export function getDesktopBridge(): DeadlineDesktopBridge {
-  return window.deadlineBridge ?? browserFallbackBridge;
+  return window.deadlineBridge ?? noopBridge;
 }
