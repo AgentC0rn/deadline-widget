@@ -263,6 +263,20 @@ function getPreloadPath(): string {
   return path.join(__dirname, 'preload.js');
 }
 
+function getAppIconImage(): Electron.NativeImage | undefined {
+  const candidates = [
+    path.join(process.resourcesPath, 'app-icon.ico'),
+    path.join(__dirname, '../../assets/app-icon.ico'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      const img = nativeImage.createFromPath(candidate);
+      if (!img.isEmpty()) return img;
+    }
+  }
+  return undefined;
+}
+
 function loadRendererEntry(win: BrowserWindow, query?: Record<string, string>): void {
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
@@ -309,6 +323,7 @@ function createMainWindow(): void {
     fullscreenable: false,
     hasShadow: false,
     alwaysOnTop: true,
+    icon: getAppIconImage(),
     webPreferences: {
       preload: getPreloadPath(),
       contextIsolation: true,
@@ -369,6 +384,7 @@ function ensureAlertWindow(): BrowserWindow {
     hasShadow: false,
     show: false,
     alwaysOnTop: true,
+    icon: getAppIconImage(),
     webPreferences: {
       preload: getPreloadPath(),
       contextIsolation: true,
@@ -498,7 +514,7 @@ function rebuildTrayMenu(): void {
 }
 
 function createSystemTray(): void {
-  tray = new Tray(createProgrammaticTrayIcon());
+  tray = new Tray(getAppIconImage() ?? createProgrammaticTrayIcon());
   tray.setToolTip('Deadline Widget — Đếm ngược công việc');
   tray.on('click', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
